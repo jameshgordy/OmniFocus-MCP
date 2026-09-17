@@ -24,6 +24,9 @@ export type BatchAddItemsParams = {
   folderName?: string; // For projects
   sequential?: boolean; // For projects
   repeat?: RepetitionSpec; // Repetition rule, tasks and projects alike (#116)
+  reviewInterval?: AddProjectParams['reviewInterval']; // For projects
+  singleActionList?: boolean; // For projects
+  completedByChildren?: boolean; // For projects
 };
 
 // Define the result type for individual operations
@@ -138,7 +141,10 @@ export async function batchAddItems(items: BatchAddItemsParams[]): Promise<Batch
               tags: item.tags,
               folderName: item.folderName,
               sequential: item.sequential,
-              repeat: item.repeat
+              repeat: item.repeat,
+              reviewInterval: item.reviewInterval,
+              singleActionList: item.singleActionList,
+              completedByChildren: item.completedByChildren
             };
 
             const projectResult = await addProject(projectParams);

@@ -10,6 +10,12 @@ import {
 } from '../../utils/appleScriptHelpers.js';
 import { repetitionRuleRecord, type RepetitionSpec } from '../../utils/repetitionRule.js';
 import { runOsascriptFile } from '../../utils/scriptExecution.js';
+import {
+  applyProjectSettings,
+  hasProjectSettings,
+  validateProjectSettings,
+  type ReviewUnit,
+} from './projectSettings.js';
 
 // Interface for project creation parameters
 export interface AddProjectParams {
@@ -23,6 +29,9 @@ export interface AddProjectParams {
   folderName?: string; // Folder name or path (e.g. "Work/Engineering") to add project to
   sequential?: boolean; // Whether tasks should be sequential or parallel
   repeat?: RepetitionSpec; // Repetition rule (#116)
+  reviewInterval?: { steps: number; unit: ReviewUnit };
+  singleActionList?: boolean;
+  completedByChildren?: boolean;
 }
 
 /**
@@ -136,6 +145,16 @@ export function generateAppleScript(params: AddProjectParams): string {
 export async function addProject(params: AddProjectParams): Promise<{success: boolean, projectId?: string, error?: string}> {
   let tempFile: string | undefined;
 
+  const settings = {
+    reviewInterval: params.reviewInterval,
+    singleActionList: params.singleActionList,
+    completedByChildren: params.completedByChildren,
+  };
+  const settingsError = validateProjectSettings(settings, params.sequential);
+  if (settingsError) {
+    return { success: false, error: settingsError };
+  }
+
   try {
     // Generate AppleScript
     const script = generateAppleScript(params);
@@ -161,6 +180,19 @@ export async function addProject(params: AddProjectParams): Promise<{success: bo
     // Parse the result
     try {
       const result = JSON.parse(stdout);
+
+      // The project exists at this point, so a settings failure is reported with
+      // its id: the caller must not retry the create and end up with two.
+      if (result.success && hasProjectSettings(settings)) {
+        const applied = await applyProjectSettings(result.projectId, settings);
+        if (!applied.success) {
+          return {
+            success: false,
+            projectId: result.projectId,
+            error: `Project created (id: ${result.projectId}) but settings failed: ${applied.error}`
+          };
+        }
+      }
 
       // Return the result
       return {

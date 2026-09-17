@@ -104,7 +104,9 @@ Available filters:
 - **Status**: `status` — tasks: `Next`, `Available`, `Blocked`, `DueSoon`, `Overdue`, `Completed`, `Dropped`; projects: `Active`, `OnHold`, `Done`, `Dropped`
 - **Dates, forward-looking**: `dueWithin`, `deferredUntil`, `plannedWithin` (ranges), `dueOn`, `deferOn`, `plannedOn` (exact day). Accept a number of days, `"today"`, `"tomorrow"`, `"this week"`, `"next week"`, or an ISO date
 - **Dates, backward-looking**: `addedWithin`, `addedOn`, `completedWithin`, `completedOn`, `droppedWithin`, `droppedOn` (completed/dropped filters require `includeCompleted: true`)
-- **Flags & misc**: `flagged`, `inbox`, `hasNote`, `isRepeating`, `reviewDue` (projects only)
+- **Flags & misc**: `flagged`, `inbox`, `hasNote`, `isRepeating`, `untagged`, `hasAttachments` (tasks only), `reviewDue`, `stalled`, `topLevel` (projects only)
+
+`stalled` matches active projects with no available action and nothing deferred to a future date. `fields` and `sortBy` accept plain identifiers only.
 
 ### `dump_database`
 
@@ -130,6 +132,9 @@ Create a new project.
 - `name`
 - `folderName` *(optional)*: folder to place the project in
 - `sequential` *(optional)*: whether tasks must be completed in order
+- `singleActionList` *(optional)*: make it a single-action list (cannot be combined with `sequential`)
+- `completedByChildren` *(optional)*: complete the project when its last action completes
+- `reviewInterval` *(optional)*: e.g. `{ "steps": 2, "unit": "week" }` (`day`, `week`, `month`, `year`)
 - `note`, `dueDate`, `deferDate`, `flagged`, `estimatedMinutes`, `tags`, `repeat` *(all optional)*
 
 ### `edit_item`
@@ -138,9 +143,9 @@ Edit an existing task or project. Also the way to **move** items — set `newPro
 
 - `id` or `name`: which item to edit (id takes precedence)
 - `itemType`: `task` or `project`
-- Common: `newName`, `newNote`, `newDueDate`, `newDeferDate`, `newFlagged`, `newEstimatedMinutes` (dates in ISO format; empty string clears)
+- Common: `newName`, `newNote` (replaces), `appendNote` (adds on a new line), `newDueDate`, `newDeferDate`, `newFlagged`, `newEstimatedMinutes` (dates in ISO format; empty string clears)
 - Tasks: `newStatus` (`incomplete`, `completed`, `dropped`, `skipped` — skipped only for repeating tasks), `addTags`, `removeTags`, `replaceTags`, `newProjectName`, `newPlannedDate`
-- Projects: `newProjectStatus` (`active`, `completed`, `dropped`, `onHold`), `newFolderName`, `newSequential`, `markReviewed` (sets the next review date based on the project's review interval)
+- Projects: `newProjectStatus` (`active`, `completed`, `dropped`, `onHold`), `newFolderName`, `newSequential`, `markReviewed` (sets the next review date based on the project's review interval), `newReviewInterval`, `newSingleActionList`, `newCompletedByChildren`
 - Repetition: `newRepeat` sets a new rule (same shape as `repeat` on create); `newRepeat: null` clears it
 
 At least one editable field is required — a call with only `id`/`name`/`itemType` is refused rather than reported as a successful no-op. Unrecognized argument keys (a `note` typo for `newNote`, say) are rejected by every tool with the key named in the error, instead of being silently dropped.
@@ -169,6 +174,33 @@ Create multiple tasks and projects in one operation. Each item accepts the same 
   ]
 }
 ```
+
+### `batch_edit_items`
+
+Apply up to 100 edits in one call. Each item takes the same fields as `edit_item`. The whole batch is validated first; if any item has no target or nothing to change, nothing is applied. Items then run in order, and each gets its own result.
+
+```json
+{
+  "items": [
+    { "id": "abc123", "itemType": "task", "newStatus": "completed" },
+    { "id": "def456", "itemType": "task", "newProjectName": "Errands", "addTags": ["Home"] }
+  ]
+}
+```
+
+### `convert_task_to_project`
+
+Turn a task into a project; its subtasks become the project's actions.
+
+- `taskId`
+- `folderName` *(optional)*: destination folder name or path (top level if omitted)
+
+### `get_review_summary`
+
+One call for a weekly review: overdue tasks, tasks due soon, inbox (with the oldest item's age), stalled projects, projects due for review, and the flagged count. Counts are complete; lists are capped.
+
+- `limit` *(optional, default: 15)*: items listed per section
+- `dueSoonDays` *(optional, default: 7)*
 
 ### `batch_remove_items`
 
@@ -202,10 +234,34 @@ Create a tag, optionally nested under an existing parent.
 
 ### `create_folder`
 
-Create a folder, optionally nested under an existing parent folder.
+Create a folder, optionally nested. If a sibling folder with the same name already exists, it is returned instead of creating a duplicate.
 
 - `name`
 - `parentFolderName` / `parentFolderID` *(optional; ID takes precedence; the name may be a path like `Work/Engineering`)*
+- `allowDuplicate` *(optional)*: create even when a same-named sibling exists
+
+### `edit_folder`
+
+- `id` or `path` (name or path like `Work/Engineering`; a bare name must be unambiguous)
+- `newName`, `newParentFolder` (`""` moves to the top level), `newStatus` (`active`, `dropped`) *(at least one)*
+
+### `remove_folder`
+
+Delete a folder. Refuses unless the folder is empty — move or drop its projects and subfolders first.
+
+- `id` or `path`
+
+### `edit_tag`
+
+- `id` or `path` (name or path like `Areas/Home`)
+- `newName`, `newParentTag` (`""` moves to the top level), `newStatus` (`active`, `onHold`, `dropped`), `newAllowsNextAction` *(at least one)*
+
+### `remove_tag`
+
+Delete a tag. Items keep existing but lose the tag. Refuses while the tag or a child tag is still assigned to remaining items, unless `force: true`.
+
+- `id` or `path`
+- `force` *(optional)*
 
 ### Repeating items
 

@@ -59,13 +59,16 @@ describe('schema description budget (#105)', () => {
     const total = Object.values(costs).reduce((a, b) => a + b, 0);
     // Raised from 6500 to 8200 in #116 to fund the `repeat` shape on four write
     // tools (~1.7k weighted). Deliberate, not drift.
-    expect(total).toBeLessThanOrEqual(8200);
+    // Raised to 9400 for the folder/tag management tools and batch_edit_items,
+    // which reuses edit_item's schema and so pays for its descriptions twice.
+    expect(total).toBeLessThanOrEqual(9400);
   });
 
   it('keeps query_omnifocus — the historical worst offender — under its own budget', () => {
     // 5,473 chars before the diet; the fields list is most of what remains.
     const source = readFileSync(join(definitionsDir, 'queryOmnifocus.ts'), 'utf8');
-    expect(describeChars(source)).toBeLessThanOrEqual(2800);
+    // 2800 -> 2900 for the untagged/hasAttachments/stalled/topLevel filters.
+    expect(describeChars(source)).toBeLessThanOrEqual(2900);
   });
 
   it('keeps the shared repeat shape lean, since every character is paid 4x', () => {
@@ -78,7 +81,8 @@ describe('schema description budget (#105)', () => {
     const matches = [...source.matchAll(/server\.tool\(\s*"[^"]+",\s*"((?:[^"\\]|\\.)*)"/g)];
     expect(matches.length).toBeGreaterThan(0);
     const total = matches.reduce((sum, m) => sum + m[1].length, 0);
-    expect(total).toBeLessThanOrEqual(1300);
+    // 1300 -> 1400 for the seven management tools.
+    expect(total).toBeLessThanOrEqual(1400);
   });
 
   it('actually detects sharing — repeatSchema is weighted above its raw size', () => {

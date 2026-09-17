@@ -105,6 +105,10 @@ export interface QueryOmnifocusParams {
     droppedWithin?: number;
     droppedOn?: number;
     reviewDue?: boolean;
+    untagged?: boolean;
+    hasAttachments?: boolean;
+    stalled?: boolean;
+    topLevel?: boolean;
   };
   fields?: string[];
   limit?: number;
@@ -121,7 +125,27 @@ interface QueryResult {
   error?: string;
 }
 
+/**
+ * `fields` and `sortBy` are spliced into the generated script as property
+ * accesses (`item.${field}`), where escaping cannot help: any string that is
+ * not a bare identifier would be evaluated as code inside OmniFocus. Only plain
+ * identifiers are accepted.
+ */
+const IDENTIFIER_RE = /^[A-Za-z_][A-Za-z0-9_]*$/;
+
+export function invalidIdentifiers(params: Pick<QueryOmnifocusParams, 'fields' | 'sortBy'>): string[] {
+  const names = [...(params.fields ?? []), ...(params.sortBy !== undefined ? [params.sortBy] : [])];
+  return names.filter(n => !IDENTIFIER_RE.test(n));
+}
+
 export async function queryOmnifocus(params: QueryOmnifocusParams): Promise<QueryResult> {
+  const invalid = invalidIdentifiers(params);
+  if (invalid.length > 0) {
+    return {
+      success: false,
+      error: `Invalid field or sort name (letters, digits and underscores only): ${invalid.map(n => JSON.stringify(n)).join(', ')}`
+    };
+  }
   try {
     // Create JXA script for the query
     const jxaScript = generateQueryScript(params);
@@ -245,6 +269,20 @@ function generateQueryScript(params: QueryOmnifocusParams): string {
           folder = folder.parentFolder;
         }
         return false;
+      }
+
+      // Active project with no actionable task and nothing deferred to a future
+      // date: empty, or fully blocked. Mirrors get_review_summary's definition.
+      function isStalledProject(project) {
+        if (project.status !== Project.Status.Active) return false;
+        const now = new Date();
+        const remaining = project.flattenedTasks.filter(t => !t.completed &&
+          t.taskStatus !== Task.Status.Dropped && t.taskStatus !== Task.Status.Completed);
+        const actionable = remaining.some(t => t.taskStatus === Task.Status.Available ||
+          t.taskStatus === Task.Status.Next || t.taskStatus === Task.Status.DueSoon ||
+          t.taskStatus === Task.Status.Overdue);
+        const scheduled = remaining.some(t => t.effectiveDeferDate && t.effectiveDeferDate > now);
+        return !actionable && !scheduled;
       }
 
       // Get the appropriate collection based on entity type
@@ -496,6 +534,10 @@ function generateFilterConditions(entity: string, filters: any): string {
       `);
     }
 
+    if (filters.hasAttachments !== undefined) {
+      conditions.push(`if (((item.attachments || []).length > 0) !== ${filters.hasAttachments === true}) return false;`);
+    }
+
     if (filters.inbox !== undefined) {
       if (filters.inbox) {
         conditions.push(`if (!item.inInbox) return false;`);
@@ -505,7 +547,19 @@ function generateFilterConditions(entity: string, filters: any): string {
     }
   }
   
+  if ((entity === 'tasks' || entity === 'projects') && filters.untagged !== undefined) {
+    conditions.push(`if (((item.tags || []).length === 0) !== ${filters.untagged === true}) return false;`);
+  }
+
   if (entity === 'projects') {
+    if (filters.topLevel !== undefined) {
+      conditions.push(`if ((!item.parentFolder) !== ${filters.topLevel === true}) return false;`);
+    }
+
+    if (filters.stalled !== undefined) {
+      conditions.push(`if (isStalledProject(item) !== ${filters.stalled === true}) return false;`);
+    }
+
     if (filters.projectId) {
       const safeId = escapeJXA(filters.projectId);
       // Match either the AppleScript-namespace id (project's root task id) or

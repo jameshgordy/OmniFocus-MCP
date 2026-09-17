@@ -12,6 +12,13 @@ import {
   JSON_ESCAPE_HANDLER,
 } from '../../utils/appleScriptHelpers.js';
 import { repetitionRuleRecord, type RepetitionSpec } from '../../utils/repetitionRule.js';
+import {
+  applyProjectSettings,
+  hasProjectSettings,
+  validateProjectSettings,
+  type ProjectSettings,
+  type ReviewUnit,
+} from './projectSettings.js';
 
 // Status options for tasks and projects
 type TaskStatus = 'incomplete' | 'completed' | 'dropped' | 'skipped';
@@ -26,6 +33,7 @@ export interface EditItemParams {
   // Common editable fields
   newName?: string;             // New name for the item
   newNote?: string;             // New note for the item
+  appendNote?: string;          // Text appended to the existing note on a new line
   newDueDate?: string;          // New due date in ISO format (empty string to clear)
   newDeferDate?: string;        // New defer date in ISO format (empty string to clear)
   newPlannedDate?: string;      // New planned date in ISO format (empty string to clear, tasks only)
@@ -45,6 +53,9 @@ export interface EditItemParams {
   newFolderName?: string;       // New folder to move the project to
   newProjectStatus?: ProjectStatus; // New status for projects
   markReviewed?: boolean;       // Mark the project as reviewed (advances next review date)
+  newReviewInterval?: { steps: number; unit: ReviewUnit }; // Review cadence
+  newSingleActionList?: boolean; // Make the project a single-action list
+  newCompletedByChildren?: boolean; // Complete the project when its last action completes
   allowPastOccurrence?: boolean; // Opt in to mutating a completed repeat occurrence (#124)
 }
 
@@ -191,6 +202,22 @@ export function generateAppleScript(params: EditItemParams): string {
         -- Update note
         set note of foundItem to "${escapeAppleScriptString(params.newNote, { preserveNewlines: true })}"
         set end of changedProperties to "note"
+`;
+  }
+
+  if (params.appendNote !== undefined) {
+    // Append rather than replace, so adding context never destroys what is
+    // already written. No leading blank line when the note starts empty.
+    const appended = escapeAppleScriptString(params.appendNote, { preserveNewlines: true });
+    script += `
+        -- Append to note
+        set existingNote to note of foundItem
+        if existingNote is missing value or existingNote is "" then
+          set note of foundItem to "${appended}"
+        else
+          set note of foundItem to existingNote & linefeed & "${appended}"
+        end if
+        set end of changedProperties to "note (appended)"
 `;
   }
   
@@ -490,6 +517,34 @@ end try
   return script;
 }
 
+const PROJECT_ONLY_FIELDS = ['newSequential', 'newFolderName', 'newProjectStatus', 'markReviewed',
+  'newReviewInterval', 'newSingleActionList', 'newCompletedByChildren'] as const;
+
+function projectSettingsOf(params: EditItemParams): ProjectSettings {
+  return {
+    reviewInterval: params.newReviewInterval,
+    singleActionList: params.newSingleActionList,
+    completedByChildren: params.newCompletedByChildren,
+  };
+}
+
+/**
+ * Combinations that would otherwise be silently dropped or resolved arbitrarily.
+ * Checked in the primitive so batch edits get the same refusal as single edits.
+ */
+export function validateEditParams(params: EditItemParams): string | null {
+  if (params.newNote !== undefined && params.appendNote !== undefined) {
+    return 'Provide either newNote (replace) or appendNote (append), not both';
+  }
+  if (params.itemType === 'task') {
+    const misplaced = PROJECT_ONLY_FIELDS.filter(k => params[k] !== undefined);
+    if (misplaced.length > 0) {
+      return `Project-only fields cannot be applied to a task: ${misplaced.join(', ')}`;
+    }
+  }
+  return validateProjectSettings(projectSettingsOf(params), params.newSequential);
+}
+
 /**
  * Edit a task or project in OmniFocus
  */
@@ -501,7 +556,12 @@ export async function editItem(params: EditItemParams): Promise<{
   error?: string
 }> {
   let tempFile: string | undefined;
-  
+
+  const validationError = validateEditParams(params);
+  if (validationError) {
+    return { success: false, error: validationError };
+  }
+
   try {
     // Generate AppleScript
     const script = generateAppleScript(params);
@@ -536,7 +596,20 @@ export async function editItem(params: EditItemParams): Promise<{
     // Parse the result
     try {
       const result = JSON.parse(stdout);
-      
+
+      // Project settings the AppleScript dictionary does not expose are applied
+      // through OmniJS on the resolved id, only after the main edit succeeded.
+      const settings = projectSettingsOf(params);
+      if (result.success && params.itemType === 'project' && hasProjectSettings(settings)) {
+        const applied = await applyProjectSettings(result.id, settings);
+        if (!applied.success) {
+          const partial = result.changedProperties ? ` (already applied: ${result.changedProperties})` : '';
+          return { success: false, id: result.id, name: result.name, error: `Failed to apply project settings: ${applied.error}${partial}` };
+        }
+        const extra = (applied.changed ?? []).join(', ');
+        result.changedProperties = [result.changedProperties, extra].filter(Boolean).join(', ');
+      }
+
       // Return the result
       return {
         success: result.success,

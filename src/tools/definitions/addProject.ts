@@ -2,6 +2,7 @@ import { z } from 'zod';
 import { addProject, AddProjectParams } from '../primitives/addProject.js';
 import { RequestHandlerExtra } from '@modelcontextprotocol/sdk/shared/protocol.js';
 import { repeatShape } from './repeatSchema.js';
+import { reviewIntervalShape } from './projectSettingsSchema.js';
 
 export const schema = z.object({
   name: z.string().describe("Project name"),
@@ -13,7 +14,10 @@ export const schema = z.object({
   tags: z.array(z.string()).optional().describe("Tag names to assign"),
   folderName: z.string().optional().describe("Folder to place the project in (root if omitted)"),
   sequential: z.boolean().optional().describe("Make tasks sequential (default: false)"),
-  repeat: repeatShape.optional()
+  repeat: repeatShape.optional(),
+  reviewInterval: reviewIntervalShape.optional(),
+  singleActionList: z.boolean().optional().describe("Single-action list"),
+  completedByChildren: z.boolean().optional().describe("Complete when last action completes")
 });
 
 export async function handler(args: z.infer<typeof schema>, extra: RequestHandlerExtra) {
@@ -35,9 +39,9 @@ export async function handler(args: z.infer<typeof schema>, extra: RequestHandle
         ? ` due on ${new Date(args.dueDate).toLocaleDateString()}`
         : "";
         
-      let sequentialText = args.sequential
-        ? " (sequential)"
-        : " (parallel)";
+      let sequentialText = args.singleActionList
+        ? " (single actions)"
+        : args.sequential ? " (sequential)" : " (parallel)";
 
       // Echo the id (#104): without it, agents re-query immediately after every
       // write just to harvest the id for the follow-up edit.

@@ -44,6 +44,10 @@ const FILTER_SPEC: Record<string, { tasks: boolean; projects: boolean }> = {
   droppedWithin: { tasks: true, projects: true },
   droppedOn: { tasks: true, projects: true },
   reviewDue: { tasks: false, projects: true },
+  untagged: { tasks: true, projects: true },
+  hasAttachments: { tasks: true, projects: false },
+  stalled: { tasks: false, projects: true },
+  topLevel: { tasks: false, projects: true },
 };
 
 // Filters that SHOULD apply to projects (per FILTER_SPEC) but are not implemented
@@ -82,6 +86,10 @@ const SAMPLE: Record<string, unknown> = {
   droppedWithin: 7,
   droppedOn: 0,
   reviewDue: true,
+  untagged: true,
+  hasAttachments: true,
+  stalled: true,
+  topLevel: true,
 };
 
 // The documented filters are whatever the tool schema exposes — the single source

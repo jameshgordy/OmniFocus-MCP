@@ -20,6 +20,13 @@ import * as getPerspectiveViewTool from './tools/definitions/getPerspectiveView.
 import * as listTagsTool from './tools/definitions/listTags.js';
 import * as createTagTool from './tools/definitions/createTag.js';
 import * as createFolderTool from './tools/definitions/createFolder.js';
+import * as editFolderTool from './tools/definitions/editFolder.js';
+import * as removeFolderTool from './tools/definitions/removeFolder.js';
+import * as editTagTool from './tools/definitions/editTag.js';
+import * as removeTagTool from './tools/definitions/removeTag.js';
+import * as batchEditItemsTool from './tools/definitions/batchEditItems.js';
+import * as convertTaskToProjectTool from './tools/definitions/convertTaskToProject.js';
+import * as getReviewSummaryTool from './tools/definitions/getReviewSummary.js';
 
 /**
  * Server construction, factored out of `server.ts` (issue #80).
@@ -46,7 +53,9 @@ TOOL GUIDANCE:
 - Prefer query_omnifocus over dump_database for targeted lookups (85-95% context savings)
 - Use the "fields" parameter to request only needed fields
 - Use "summary: true" for quick counts without full data
-- For batch operations, prefer batch_add_items/batch_remove_items over repeated single calls
+- For batch operations, prefer batch_add_items/batch_edit_items/batch_remove_items over repeated single calls
+- Use edit_item appendNote to add to a note; newNote replaces it
+- For a weekly review, start with get_review_summary
 
 RESOURCES:
 - omnifocus://inbox — current inbox items
@@ -187,9 +196,58 @@ export function createOmniFocusServer(): BuiltServer {
 
   server.tool(
     "create_folder",
-    "Create a new folder in OmniFocus, optionally nested under an existing parent folder",
+    "Create a folder; returns an existing same-named sibling instead",
     createFolderTool.schema.shape,
     withUpgradeNudge(createFolderTool.handler)
+  );
+
+  server.tool(
+    "edit_folder",
+    "Rename, move, or drop/reactivate a folder",
+    editFolderTool.schema.shape,
+    withUpgradeNudge(editFolderTool.handler)
+  );
+
+  server.tool(
+    "remove_folder",
+    "Delete an empty folder",
+    removeFolderTool.schema.shape,
+    withUpgradeNudge(removeFolderTool.handler)
+  );
+
+  server.tool(
+    "edit_tag",
+    "Rename, nest, or change the status of a tag",
+    editTagTool.schema.shape,
+    withUpgradeNudge(editTagTool.handler)
+  );
+
+  server.tool(
+    "remove_tag",
+    "Delete a tag; refuses if in use unless force",
+    removeTagTool.schema.shape,
+    withUpgradeNudge(removeTagTool.handler)
+  );
+
+  server.tool(
+    "batch_edit_items",
+    "Apply several edit_item edits in one call",
+    batchEditItemsTool.schema.shape,
+    withUpgradeNudge(batchEditItemsTool.handler)
+  );
+
+  server.tool(
+    "convert_task_to_project",
+    "Convert a task into a project",
+    convertTaskToProjectTool.schema.shape,
+    withUpgradeNudge(convertTaskToProjectTool.handler)
+  );
+
+  server.tool(
+    "get_review_summary",
+    "Weekly review digest: overdue, inbox, stalled, reviews due",
+    getReviewSummaryTool.schema.shape,
+    withUpgradeNudge(getReviewSummaryTool.handler)
   );
 
   rejectUnknownArguments(server);

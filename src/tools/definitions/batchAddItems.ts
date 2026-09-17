@@ -2,6 +2,7 @@ import { z } from 'zod';
 import { batchAddItems, BatchAddItemsParams } from '../primitives/batchAddItems.js';
 import { RequestHandlerExtra } from '@modelcontextprotocol/sdk/shared/protocol.js';
 import { repeatShape } from './repeatSchema.js';
+import { reviewIntervalShape } from './projectSettingsSchema.js';
 
 export const schema = z.object({
   items: z.array(z.object({
@@ -30,7 +31,10 @@ export const schema = z.object({
     // Project-specific properties
     folderName: z.string().optional().describe("Projects: folder to place the project in"),
     sequential: z.boolean().optional().describe("Projects: make tasks sequential"),
-    repeat: repeatShape.optional()
+    repeat: repeatShape.optional(),
+    reviewInterval: reviewIntervalShape.optional(),
+    singleActionList: z.boolean().optional().describe("Projects: single-action list"),
+    completedByChildren: z.boolean().optional().describe("Projects: complete when last action completes")
   })).describe("Items to add"),
   createSequentially: z.boolean().optional().describe("Process parents before children; even when false, parents are resolved first best-effort")
 });

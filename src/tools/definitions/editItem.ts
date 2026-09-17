@@ -2,6 +2,7 @@ import { z } from 'zod';
 import { editItem, EditItemParams } from '../primitives/editItem.js';
 import { RequestHandlerExtra } from '@modelcontextprotocol/sdk/shared/protocol.js';
 import { repeatShape } from './repeatSchema.js';
+import { reviewIntervalShape } from './projectSettingsSchema.js';
 
 export const schema = z.object({
   id: z.string().optional().describe("Item id (takes precedence over name)"),
@@ -11,6 +12,7 @@ export const schema = z.object({
   // Common editable fields. Dates take YYYY-MM-DD or full ISO; "" clears.
   newName: z.string().optional().describe("New name"),
   newNote: z.string().optional().describe("New note"),
+  appendNote: z.string().optional().describe("Append to the note on a new line"),
   newDueDate: z.string().optional().describe("New due date (ISO; \"\" clears)"),
   newDeferDate: z.string().optional().describe("New defer date (ISO; \"\" clears)"),
   newPlannedDate: z.string().optional().describe("New planned date (ISO; \"\" clears; tasks only)"),
@@ -30,6 +32,9 @@ export const schema = z.object({
   newFolderName: z.string().optional().describe("Move the project to this folder"),
   newProjectStatus: z.enum(['active', 'completed', 'dropped', 'onHold']).optional().describe("New project status"),
   markReviewed: z.boolean().optional().describe("true marks the project reviewed, scheduling the next review from its review interval (projects only)"),
+  newReviewInterval: reviewIntervalShape.optional(),
+  newSingleActionList: z.boolean().optional().describe("Single-action list"),
+  newCompletedByChildren: z.boolean().optional().describe("Complete when last action completes"),
   allowPastOccurrence: z.boolean().optional().describe("Allow mutating a completed occurrence of a repeating item (refused by default — it can cascade through the live repeat chain)")
 });
 
