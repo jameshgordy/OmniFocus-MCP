@@ -2,6 +2,7 @@ import { describe, it, expect } from 'vitest';
 import { generateAppleScript as generateAddTaskScript } from './addOmniFocusTask.js';
 import { generateAppleScript as generateAddProjectScript } from './addProject.js';
 import { generateAppleScript as generateCreateTagScript } from './createTag.js';
+import { generateAppleScript as generateCreateFolderScript } from './createFolder.js';
 import { generateAppleScript as generateRemoveItemScript } from './removeItem.js';
 import { generateAppleScript as generateEditItemScript } from './editItem.js';
 
@@ -104,6 +105,21 @@ describe('write-result JSON payload safety (#103)', () => {
     });
   });
 
+  describe('create_folder', () => {
+    it('does not echo the folder name into the success payload', () => {
+      const script = generateCreateFolderScript({ name: HOSTILE });
+      const success = lineContaining(script, '\\"folderId\\"');
+      expect(success).not.toContain('policy');
+    });
+
+    it('parent-not-found error JSON survives a quoted parent name', () => {
+      const script = generateCreateFolderScript({ name: 'x', parentFolderName: 'the "urgent" bucket' });
+      const result = parseReturnedJson(lineContaining(script, 'Parent folder not found'));
+      expect(result.success).toBe(false);
+      expect(result.error).toBe('Parent folder not found: the "urgent" bucket');
+    });
+  });
+
   describe('remove_item', () => {
     it('routes the runtime item name and error text through jsonEscape', () => {
       const script = generateRemoveItemScript({ id: 'abc', itemType: 'task' });
@@ -150,6 +166,7 @@ describe('write-result JSON payload safety (#103)', () => {
       generateAddTaskScript({ name: 'x' }),
       generateAddProjectScript({ name: 'x' }),
       generateCreateTagScript({ name: 'x' }),
+      generateCreateFolderScript({ name: 'x' }),
       generateRemoveItemScript({ id: 'abc', itemType: 'task' }),
       generateEditItemScript({ id: 'abc', itemType: 'task', newName: 'y' }),
     ];

@@ -200,6 +200,13 @@ Create a tag, optionally nested under an existing parent.
 - `name`
 - `parentTagName` / `parentTagID` *(optional; ID takes precedence)*
 
+### `create_folder`
+
+Create a folder, optionally nested under an existing parent folder.
+
+- `name`
+- `parentFolderName` / `parentFolderID` *(optional; ID takes precedence; the name may be a path like `Work/Engineering`)*
+
 ### Repeating items
 
 `add_omnifocus_task`, `add_project`, and each item in `batch_add_items` accept a `repeat` object; `edit_item` accepts `newRepeat`. You describe the schedule and the server compiles the ICS recurrence rule, so you never hand-write an RRULE.
