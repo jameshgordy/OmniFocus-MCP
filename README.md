@@ -338,7 +338,7 @@ Note that the check is on *repeating item plus terminal status*, not on the shap
 |---|---|---|
 | `OMNIFOCUS_MCP_NO_DAEMON` | unset | Set to `1` to skip the daemon entirely and run a dedicated server per client (the pre-daemon behavior). First thing to try if you suspect the daemon. |
 | `OMNIFOCUS_MCP_SOCKET` | `~/.omnifocus-mcp/daemon-<version>.sock` | Override the socket path, e.g. to run an isolated instance. |
-| `OMNIFOCUS_MCP_IDLE_TIMEOUT_MINUTES` | `30` | Exit after this long with no client traffic. `0` disables the timeout. |
+| `OMNIFOCUS_MCP_IDLE_TIMEOUT_MINUTES` | `30` | After this long with no client traffic, the per-client shim releases its daemon session (and the daemon exits once it has no sessions). The client's stdio connection stays open and the session is rebuilt on the next request. `0` disables the timeout. |
 | `OMNIFOCUS_MCP_MAX_CONCURRENT_OSASCRIPT` | `4` | Maximum concurrent `osascript` calls. Lower it if you still see AppleEvent timeouts. |
 
 ## Roadmap

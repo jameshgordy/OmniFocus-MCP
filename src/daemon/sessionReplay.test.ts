@@ -24,6 +24,17 @@ describe('SessionTracker (#123)', () => {
     expect(s.replayLines()).toEqual([init, initialized]);
   });
 
+  it('retires a request whose response arrives split across chunks', () => {
+    // Real tool results are large and arrive in several socket chunks. Parsing
+    // per chunk never saw a complete frame, so the id stayed pending and the
+    // next session rebuild sent the client an error for an answered request.
+    const s = new SessionTracker();
+    s.observeOutbound(call(1) + '\n');
+    const big = JSON.stringify({ jsonrpc: '2.0', id: 1, result: { tools: 'x'.repeat(50_000) } }) + '\n';
+    for (let i = 0; i < big.length; i += 8192) s.observeInbound(big.slice(i, i + 8192));
+    expect(s.pendingIds).toEqual([]);
+  });
+
   it('reassembles messages split across chunk boundaries', () => {
     // A socket gives no framing guarantees; a naive per-chunk parse would miss
     // the handshake entirely and silently lose the ability to recover.

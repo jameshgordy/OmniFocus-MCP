@@ -36,6 +36,9 @@
  * addressed by never retrying writes. Re-query before retrying a write.
  */
 
+const DAEMON_RESTART_MESSAGE =
+  'The OmniFocus MCP daemon restarted while this request was in flight. The session has been re-established; retry the request.';
+
 export interface JsonRpcLike {
   jsonrpc?: string;
   id?: string | number;
@@ -51,6 +54,7 @@ export class SessionTracker {
   private initializedLine: string | null = null;
   private readonly pending = new Set<string>();
   private buffer = '';
+  private inboundBuffer = '';
 
   /** Observe bytes travelling client → daemon. */
   observeOutbound(chunk: string): void {
@@ -85,21 +89,33 @@ export class SessionTracker {
     }
   }
 
-  /** Observe bytes travelling daemon → client, to retire answered requests. */
+  /**
+   * Observe bytes travelling daemon → client, to retire answered requests.
+   *
+   * Reassembled line by line, exactly like the outbound side: a tool result is
+   * routinely tens of KB and arrives as several socket chunks, so parsing per
+   * chunk never sees a complete frame and the id stays pending forever. That
+   * surfaced as a spurious "request was orphaned" error for an already-answered
+   * `tools/list` every time the session was rebuilt.
+   */
   observeInbound(chunk: string): void {
-    for (const line of chunk.split('\n')) {
-      const trimmed = line.trim();
-      if (!trimmed) continue;
+    this.inboundBuffer += chunk;
+    let idx: number;
+    while ((idx = this.inboundBuffer.indexOf('\n')) !== -1) {
+      const line = this.inboundBuffer.slice(0, idx).trim();
+      this.inboundBuffer = this.inboundBuffer.slice(idx + 1);
+      if (!line) continue;
       try {
-        const msg: JsonRpcLike = JSON.parse(trimmed);
+        const msg: JsonRpcLike = JSON.parse(line);
         if (msg.id !== undefined && (msg.result !== undefined || msg.error !== undefined)) {
           this.pending.delete(String(msg.id));
         }
       } catch {
-        // Partial or non-JSON frame; a later chunk completes it. Leaving the id
-        // pending is the safe direction — a spurious error beats a silent hang.
+        // Non-JSON line; nothing to retire. Leaving the id pending is the safe
+        // direction — a spurious error beats a silent hang.
       }
     }
+    if (this.inboundBuffer.length > 20_000_000) this.inboundBuffer = '';
   }
 
   /** True once the client has completed a handshake worth replaying. */
@@ -121,17 +137,13 @@ export class SessionTracker {
    * -32000 is the server-error range. The message names the cause, because a
    * caller seeing this should retry rather than conclude the tool is broken.
    */
-  orphanedResponses(): string[] {
+  orphanedResponses(message: string = DAEMON_RESTART_MESSAGE): string[] {
     return [...this.pending].map(id => {
       const numeric = /^-?\d+$/.test(id);
       return JSON.stringify({
         jsonrpc: '2.0',
         id: numeric ? Number(id) : id,
-        error: {
-          code: -32000,
-          message:
-            'The OmniFocus MCP daemon restarted while this request was in flight. The session has been re-established; retry the request.',
-        },
+        error: { code: -32000, message },
       });
     });
   }
