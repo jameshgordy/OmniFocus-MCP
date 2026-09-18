@@ -1,4 +1,4 @@
-import { describe, it, expect, vi } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
 
@@ -26,6 +26,9 @@ vi.mock('./utils/scriptExecution.js', async (importOriginal) => {
 });
 
 import { createOmniFocusServer } from './buildServer.js';
+import { mkdtempSync, rmSync, writeFileSync } from 'fs';
+import { tmpdir } from 'os';
+import { join } from 'path';
 
 async function connectedClient() {
   const { server } = createOmniFocusServer();
@@ -130,5 +133,100 @@ describe('nested objects are strict too', () => {
       arguments: { itemType: 'task', newRepeat: null },
     })) as any;
     expect(r.content[0].text).toContain('Either id or name');
+  });
+});
+
+describe('automations through a real client', () => {
+  let dir: string;
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), 'of-auto-'));
+    process.env.OMNIFOCUS_MCP_AUTOMATIONS_DIR = dir;
+  });
+  afterEach(() => {
+    delete process.env.OMNIFOCUS_MCP_AUTOMATIONS_DIR;
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  it('lists nothing, then saves and lists a recipe', async () => {
+    const client = await connectedClient();
+    const empty = (await client.callTool({ name: 'list_automations', arguments: {} })) as any;
+    expect(empty.content[0].text).toContain('No automations yet');
+    expect(empty.content[0].text).toContain(dir);
+
+    const saved = (await client.callTool({
+      name: 'save_automation',
+      arguments: {
+        name: 'capture',
+        kind: 'recipe',
+        content: JSON.stringify({
+          description: 'Capture into Inbox',
+          params: { name: { required: true, description: 'Task name' } },
+          steps: [{ tool: 'add_omnifocus_task', args: { name: '{{name}}', tags: ['quick'] } }],
+        }),
+      },
+    })) as any;
+    expect(saved.isError).toBeUndefined();
+    expect(saved.content[0].text).toContain(join(dir, 'capture.json'));
+
+    const listed = (await client.callTool({ name: 'list_automations', arguments: {} })) as any;
+    expect(listed.content[0].text).toContain('- capture [recipe] Capture into Inbox');
+    expect(listed.content[0].text).toContain('name (required): Task name');
+  });
+
+  it('refuses to save a recipe whose step has a misspelled tool argument', async () => {
+    const client = await connectedClient();
+    const r = (await client.callTool({
+      name: 'save_automation',
+      arguments: {
+        name: 'bad',
+        kind: 'recipe',
+        content: JSON.stringify({ description: 'x', steps: [{ tool: 'add_omnifocus_task', args: { nmae: 'x' } }] }),
+      },
+    })) as any;
+    expect(r.isError).toBe(true);
+    expect(r.content[0].text).toContain('nmae');
+  });
+
+  it('dry-runs a recipe to show the resolved calls, and rejects bad params', async () => {
+    writeFileSync(join(dir, 'capture.json'), JSON.stringify({
+      description: 'x',
+      params: { name: { required: true } },
+      steps: [{ tool: 'add_omnifocus_task', args: { name: '{{name}}', dueDate: '{{due}}' } }],
+    }));
+    const client = await connectedClient();
+    const dry = (await client.callTool({
+      name: 'run_automation',
+      arguments: { name: 'capture', params: { name: 'Milk' }, dryRun: true },
+    })) as any;
+    expect(dry.isError).toBeUndefined();
+    expect(JSON.parse(dry.content[0].text.split('\n').slice(1).join('\n'))).toEqual([
+      { tool: 'add_omnifocus_task', args: { name: 'Milk' } },
+    ]);
+
+    const bad = (await client.callTool({
+      name: 'run_automation',
+      arguments: { name: 'capture', params: { title: 'Milk' } },
+    })) as any;
+    expect(bad.isError).toBe(true);
+    expect(bad.content[0].text).toMatch(/unknown param\(s\): title/);
+  });
+
+  it('a real run dispatches to the tool, whose osascript is mocked to fail', async () => {
+    writeFileSync(join(dir, 'tags.json'), JSON.stringify({
+      description: 'x', steps: [{ tool: 'list_tags', args: {} }],
+    }));
+    const client = await connectedClient();
+    const r = (await client.callTool({ name: 'run_automation', arguments: { name: 'tags' } })) as any;
+    // list_tags reached executeOmniFocusScript (mocked above to throw), which
+    // proves the recipe dispatched to the real handler.
+    expect(r.isError).toBe(true);
+    expect(r.content[0].text).toContain('test reached osascript');
+  });
+
+  it('names a missing automation instead of guessing', async () => {
+    const client = await connectedClient();
+    const r = (await client.callTool({ name: 'run_automation', arguments: { name: 'ghost' } })) as any;
+    expect(r.isError).toBe(true);
+    expect(r.content[0].text).toContain('No automation named "ghost"');
   });
 });

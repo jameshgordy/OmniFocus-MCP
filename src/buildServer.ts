@@ -1,32 +1,14 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
-import { z } from "zod";
 import { SetLevelRequestSchema } from "@modelcontextprotocol/sdk/types.js";
 import { Logger } from './utils/logger.js';
 import { setScriptLogger } from './utils/scriptExecution.js';
 import { registerResources } from './resources/index.js';
 import { withUpgradeNudge } from './daemon/upgradeNudge.js';
 
-// Import tool definitions
-import * as dumpDatabaseTool from './tools/definitions/dumpDatabase.js';
-import * as addOmniFocusTaskTool from './tools/definitions/addOmniFocusTask.js';
-import * as addProjectTool from './tools/definitions/addProject.js';
-import * as removeItemTool from './tools/definitions/removeItem.js';
-import * as editItemTool from './tools/definitions/editItem.js';
-import * as batchAddItemsTool from './tools/definitions/batchAddItems.js';
-import * as batchRemoveItemsTool from './tools/definitions/batchRemoveItems.js';
-import * as queryOmniFocusTool from './tools/definitions/queryOmnifocus.js';
-import * as listPerspectivesTool from './tools/definitions/listPerspectives.js';
-import * as getPerspectiveViewTool from './tools/definitions/getPerspectiveView.js';
-import * as listTagsTool from './tools/definitions/listTags.js';
-import * as createTagTool from './tools/definitions/createTag.js';
-import * as createFolderTool from './tools/definitions/createFolder.js';
-import * as editFolderTool from './tools/definitions/editFolder.js';
-import * as removeFolderTool from './tools/definitions/removeFolder.js';
-import * as editTagTool from './tools/definitions/editTag.js';
-import * as removeTagTool from './tools/definitions/removeTag.js';
-import * as batchEditItemsTool from './tools/definitions/batchEditItems.js';
-import * as convertTaskToProjectTool from './tools/definitions/convertTaskToProject.js';
-import * as getReviewSummaryTool from './tools/definitions/getReviewSummary.js';
+import { TOOL_TABLE } from './tools/registry.js';
+import * as automationsTool from './tools/definitions/automations.js';
+import { rejectUnknownArguments } from './utils/strictSchema.js';
+export { rejectUnknownArguments, deepStrict } from './utils/strictSchema.js';
 
 /**
  * Server construction, factored out of `server.ts` (issue #80).
@@ -56,6 +38,7 @@ TOOL GUIDANCE:
 - For batch operations, prefer batch_add_items/batch_edit_items/batch_remove_items over repeated single calls
 - Use edit_item appendNote to add to a note; newNote replaces it
 - For a weekly review, start with get_review_summary
+- Check list_automations first for repeated actions; run_automation with a name and params is far cheaper than composing the full call. Save a recipe with save_automation when you notice yourself repeating one.
 
 RESOURCES:
 - omnifocus://inbox — current inbox items
@@ -110,144 +93,28 @@ export function createOmniFocusServer(): BuiltServer {
 
   registerResources(server, logger);
 
-  server.tool(
-    "dump_database",
-    "Gets the current state of your OmniFocus database",
-    dumpDatabaseTool.schema.shape,
-    withUpgradeNudge(dumpDatabaseTool.handler)
-  );
+  for (const tool of TOOL_TABLE) {
+    server.tool(tool.name, tool.description, tool.schema.shape, withUpgradeNudge(tool.handler));
+  }
 
+  // Automations are registered outside TOOL_TABLE so a recipe cannot invoke one.
   server.tool(
-    "add_omnifocus_task",
-    "Create a NEW task. If a matching task already exists (e.g. in the Inbox), do NOT create a duplicate — MOVE it with edit_item + newProjectName. When unsure, check with query_omnifocus first.",
-    addOmniFocusTaskTool.schema.shape,
-    withUpgradeNudge(addOmniFocusTaskTool.handler)
+    "list_automations",
+    "List saved automations (recipes and scripts) and their params",
+    automationsTool.listSchema.shape,
+    withUpgradeNudge(automationsTool.listHandler)
   );
-
   server.tool(
-    "add_project",
-    "Add a new project to OmniFocus",
-    addProjectTool.schema.shape,
-    withUpgradeNudge(addProjectTool.handler)
+    "run_automation",
+    "Run a saved automation by name. Cheapest way to do a repeated action.",
+    automationsTool.runSchema.shape,
+    withUpgradeNudge(automationsTool.runHandler)
   );
-
   server.tool(
-    "remove_item",
-    "Remove a task or project from OmniFocus",
-    removeItemTool.schema.shape,
-    withUpgradeNudge(removeItemTool.handler)
-  );
-
-  server.tool(
-    "edit_item",
-    "Edit an existing task or project. Also how you MOVE a task: set newProjectName (or \"\" / \"inbox\"). Prefer moving an existing task over re-creating it — never make duplicates.",
-    editItemTool.schema.shape,
-    withUpgradeNudge(editItemTool.handler)
-  );
-
-  server.tool(
-    "batch_add_items",
-    "Add multiple tasks or projects to OmniFocus in a single operation",
-    batchAddItemsTool.schema.shape,
-    withUpgradeNudge(batchAddItemsTool.handler)
-  );
-
-  server.tool(
-    "batch_remove_items",
-    "Remove multiple tasks or projects from OmniFocus in a single operation",
-    batchRemoveItemsTool.schema.shape,
-    withUpgradeNudge(batchRemoveItemsTool.handler)
-  );
-
-  server.tool(
-    "query_omnifocus",
-    "Query tasks, projects, or folders with filters (project, folder, tags, status, dates). Much faster and lighter than dump_database for targeted lookups.",
-    queryOmniFocusTool.schema.shape,
-    withUpgradeNudge(queryOmniFocusTool.handler)
-  );
-
-  server.tool(
-    "list_perspectives",
-    "List built-in and custom perspectives (custom is a Pro feature)",
-    listPerspectivesTool.schema.shape,
-    withUpgradeNudge(listPerspectivesTool.handler)
-  );
-
-  server.tool(
-    "get_perspective_view",
-    "Get the items visible in a named OmniFocus perspective",
-    getPerspectiveViewTool.schema.shape,
-    withUpgradeNudge(getPerspectiveViewTool.handler)
-  );
-
-  server.tool(
-    "list_tags",
-    "List all tags with their hierarchy",
-    listTagsTool.schema.shape,
-    withUpgradeNudge(listTagsTool.handler)
-  );
-
-  server.tool(
-    "create_tag",
-    "Create a new tag in OmniFocus, optionally nested under an existing parent tag",
-    createTagTool.schema.shape,
-    withUpgradeNudge(createTagTool.handler)
-  );
-
-  server.tool(
-    "create_folder",
-    "Create a folder; returns an existing same-named sibling instead",
-    createFolderTool.schema.shape,
-    withUpgradeNudge(createFolderTool.handler)
-  );
-
-  server.tool(
-    "edit_folder",
-    "Rename, move, or drop/reactivate a folder",
-    editFolderTool.schema.shape,
-    withUpgradeNudge(editFolderTool.handler)
-  );
-
-  server.tool(
-    "remove_folder",
-    "Delete an empty folder",
-    removeFolderTool.schema.shape,
-    withUpgradeNudge(removeFolderTool.handler)
-  );
-
-  server.tool(
-    "edit_tag",
-    "Rename, nest, or change the status of a tag",
-    editTagTool.schema.shape,
-    withUpgradeNudge(editTagTool.handler)
-  );
-
-  server.tool(
-    "remove_tag",
-    "Delete a tag; refuses if in use unless force",
-    removeTagTool.schema.shape,
-    withUpgradeNudge(removeTagTool.handler)
-  );
-
-  server.tool(
-    "batch_edit_items",
-    "Apply several edit_item edits in one call",
-    batchEditItemsTool.schema.shape,
-    withUpgradeNudge(batchEditItemsTool.handler)
-  );
-
-  server.tool(
-    "convert_task_to_project",
-    "Convert a task into a project",
-    convertTaskToProjectTool.schema.shape,
-    withUpgradeNudge(convertTaskToProjectTool.handler)
-  );
-
-  server.tool(
-    "get_review_summary",
-    "Weekly review digest: overdue, inbox, stalled, reviews due",
-    getReviewSummaryTool.schema.shape,
-    withUpgradeNudge(getReviewSummaryTool.handler)
+    "save_automation",
+    "Save a recipe (JSON) or OmniJS script as a reusable automation",
+    automationsTool.saveSchema.shape,
+    withUpgradeNudge(automationsTool.saveHandler)
   );
 
   rejectUnknownArguments(server);
@@ -255,61 +122,3 @@ export function createOmniFocusServer(): BuiltServer {
   return { server, logger };
 }
 
-/**
- * Make every registered tool refuse unrecognized argument keys.
- *
- * `server.tool()` wraps each shape in a plain `z.object`, which silently strips
- * unknown keys before the handler runs. That is how `edit_item` called with
- * `note` instead of `newNote` reported "updated successfully" for a write that
- * never happened: the typo was dropped and the handler saw nothing to change.
- * A wrong field name should fail loudly, with the key named in the error, on
- * every tool — not only on the one that happened to bite.
- *
- * The SDK offers no public way to pass a strict object to `tool()`, so this
- * reaches into `_registeredTools` and swaps each `inputSchema` for its
- * `.strict()` form. `buildServer.test.ts` drives a real client through the
- * result; an SDK bump that renames the field turns the test red rather than
- * quietly restoring the silent-strip behavior.
- */
-export function rejectUnknownArguments(server: McpServer): void {
-  const registered = (server as unknown as { _registeredTools?: Record<string, { inputSchema?: unknown }> })._registeredTools;
-  if (!registered) return;
-  for (const tool of Object.values(registered)) {
-    if (tool.inputSchema instanceof z.ZodObject) {
-      tool.inputSchema = deepStrict(tool.inputSchema);
-    }
-  }
-}
-
-/**
- * `.strict()` does not recurse. A typo inside a nested object — `filters:
- * {inInbox: true}` where the filter is named `inbox` — was still stripped
- * after the top-level patch, and the query ran unfiltered and reported the
- * whole database as the answer. Rebuild the schema so every object at any
- * depth (through optional/nullable/default wrappers, arrays, and unions) is
- * strict.
- */
-export function deepStrict<T extends z.ZodTypeAny>(schema: T): T {
-  // Each branch rebuilds from the existing `_def` so descriptions, defaults and
-  // constraints (array min/max, etc.) ride along unchanged; only the shape or
-  // inner type is replaced.
-  if (schema instanceof z.ZodObject) {
-    const shape: Record<string, z.ZodTypeAny> = {};
-    for (const [key, value] of Object.entries(schema.shape as Record<string, z.ZodTypeAny>)) {
-      shape[key] = deepStrict(value);
-    }
-    return new z.ZodObject({ ...schema._def, shape: () => shape, unknownKeys: 'strict' }) as unknown as T;
-  }
-  if (schema instanceof z.ZodOptional || schema instanceof z.ZodNullable || schema instanceof z.ZodDefault) {
-    const Ctor = schema.constructor as new (def: any) => T;
-    return new Ctor({ ...schema._def, innerType: deepStrict(schema._def.innerType) });
-  }
-  if (schema instanceof z.ZodArray) {
-    return new z.ZodArray({ ...schema._def, type: deepStrict(schema._def.type) }) as unknown as T;
-  }
-  if (schema instanceof z.ZodUnion) {
-    const options = (schema._def.options as z.ZodTypeAny[]).map(deepStrict);
-    return new z.ZodUnion({ ...schema._def, options }) as unknown as T;
-  }
-  return schema;
-}

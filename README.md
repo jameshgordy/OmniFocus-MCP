@@ -263,6 +263,48 @@ Delete a tag. Items keep existing but lose the tag. Refuses while the tag or a c
 - `id` or `path`
 - `force` *(optional)*
 
+### `list_automations`, `run_automation`, `save_automation`
+
+Automations are files you (or Claude) keep in a folder of your choosing that package an OmniFocus operation you do repeatedly. Running one is a single small call, which is much cheaper in tokens than composing the full tool call each time, and the shape is fixed once so it cannot drift.
+
+Two kinds, told apart by extension:
+
+- **Recipes** (`name.json`) are templated calls to the tools above. Placeholders like `{{name}}` are filled from `params`; a field whose param is absent is dropped, so optional fields behave like optional tool arguments. Each step's arguments are validated by that tool's schema, and unknown keys are refused.
+
+  ```json
+  {
+    "description": "Capture a task into Inbox tagged quick",
+    "params": {
+      "name": { "description": "Task name", "required": true },
+      "due":  { "description": "Due date (optional)" }
+    },
+    "steps": [
+      { "tool": "add_omnifocus_task",
+        "args": { "name": "{{name}}", "tags": ["quick"], "dueDate": "{{due}}" } }
+    ]
+  }
+  ```
+
+- **Scripts** (`name.js` or `name.omnijs`) are [Omni Automation](https://omni-automation.com/omnifocus/) JavaScript run inside OmniFocus, for anything the tools cannot express. A `params` object is in scope and the script's final expression is returned. Describe it with leading comments:
+
+  ```js
+  // @description Count remaining inbox items
+  // @param limit  How many names to include
+  (() => JSON.stringify({ count: inbox.length, names: inbox.slice(0, params.limit || 5).map(t => t.name) }))()
+  ```
+
+Starter files for both kinds are in [`examples/automations`](examples/automations). `run_automation` takes `name`, `params`, and `dryRun` (recipes only: show the resolved calls without executing). `save_automation` takes `name`, `kind`, `content` (recipe JSON or script source) and `overwrite`. Files are re-read on every call, so editing them by hand or from another agent takes effect immediately. Scripts run with the same access as OmniFocus's own automation menu, so review one before saving it.
+
+The folder is `~/.omnifocus-mcp/automations` unless `OMNIFOCUS_MCP_AUTOMATIONS_DIR` says otherwise; it may list several folders separated by `:` (first one wins on a name clash, and saves go there). For Claude Desktop, put the variable in the server's `env` block so the app and any Cowork session share one folder:
+
+```json
+"omnifocus": {
+  "command": "node",
+  "args": ["/path/to/OmniFocus-MCP/cli.cjs"],
+  "env": { "OMNIFOCUS_MCP_AUTOMATIONS_DIR": "/Users/you/Documents/OmniFocus Automations" }
+}
+```
+
 ### Repeating items
 
 `add_omnifocus_task`, `add_project`, and each item in `batch_add_items` accept a `repeat` object; `edit_item` accepts `newRepeat`. You describe the schedule and the server compiles the ICS recurrence rule, so you never hand-write an RRULE.
@@ -339,6 +381,7 @@ Note that the check is on *repeating item plus terminal status*, not on the shap
 | `OMNIFOCUS_MCP_NO_DAEMON` | unset | Set to `1` to skip the daemon entirely and run a dedicated server per client (the pre-daemon behavior). First thing to try if you suspect the daemon. |
 | `OMNIFOCUS_MCP_SOCKET` | `~/.omnifocus-mcp/daemon-<version>.sock` | Override the socket path, e.g. to run an isolated instance. |
 | `OMNIFOCUS_MCP_IDLE_TIMEOUT_MINUTES` | `30` | After this long with no client traffic, the per-client shim releases its daemon session (and the daemon exits once it has no sessions). The client's stdio connection stays open and the session is rebuilt on the next request. `0` disables the timeout. |
+| `OMNIFOCUS_MCP_AUTOMATIONS_DIR` | `~/.omnifocus-mcp/automations` | Where automations (recipes and scripts) live. Several folders may be listed, separated by `:`. |
 | `OMNIFOCUS_MCP_MAX_CONCURRENT_OSASCRIPT` | `4` | Maximum concurrent `osascript` calls. Lower it if you still see AppleEvent timeouts. |
 
 ## Roadmap

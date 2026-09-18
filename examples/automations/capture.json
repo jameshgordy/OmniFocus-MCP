@@ -1,0 +1,14 @@
+{
+  "description": "Capture a task into the Inbox, optionally with a due date and note",
+  "params": {
+    "name": { "description": "Task name", "required": true },
+    "due": { "description": "Due date, e.g. 2026-10-01 or tomorrow" },
+    "note": { "description": "Note text" }
+  },
+  "steps": [
+    {
+      "tool": "add_omnifocus_task",
+      "args": { "name": "{{name}}", "dueDate": "{{due}}", "note": "{{note}}" }
+    }
+  ]
+}

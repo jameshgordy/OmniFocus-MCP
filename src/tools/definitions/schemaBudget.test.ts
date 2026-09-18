@@ -76,13 +76,19 @@ describe('schema description budget (#105)', () => {
     expect(describeChars(source)).toBeLessThanOrEqual(500);
   });
 
-  it('keeps the server.tool() registration descriptions under budget', () => {
+  it('keeps the tool registration descriptions under budget', () => {
+    // Tools are described in two places: the registry table (every OmniFocus
+    // tool) and buildServer's direct server.tool() calls (the automation tools).
+    const registry = readFileSync(join(definitionsDir, '..', 'registry.ts'), 'utf8');
+    const tableMatches = [...registry.matchAll(/description:\s*'((?:[^'\\]|\\.)*)'/g)];
+    expect(tableMatches.length).toBeGreaterThan(10);
     const source = readFileSync(join(definitionsDir, '..', '..', 'buildServer.ts'), 'utf8');
-    const matches = [...source.matchAll(/server\.tool\(\s*"[^"]+",\s*"((?:[^"\\]|\\.)*)"/g)];
-    expect(matches.length).toBeGreaterThan(0);
-    const total = matches.reduce((sum, m) => sum + m[1].length, 0);
+    const directMatches = [...source.matchAll(/server\.tool\(\s*"[^"]+",\s*"((?:[^"\\]|\\.)*)"/g)];
+    expect(directMatches.length).toBeGreaterThan(0);
+    const total = [...tableMatches, ...directMatches].reduce((sum, m) => sum + m[1].length, 0);
     // 1300 -> 1400 for the seven management tools.
-    expect(total).toBeLessThanOrEqual(1400);
+    // 1400 -> 1600 for the three automation tools.
+    expect(total).toBeLessThanOrEqual(1600);
   });
 
   it('actually detects sharing — repeatSchema is weighted above its raw size', () => {

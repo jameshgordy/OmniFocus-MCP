@@ -340,10 +340,21 @@ const escapeContent = (content: string) => {
 };
 
 // Function to execute scripts in OmniFocus using the URL scheme
+export interface ExecuteOmniFocusScriptOptions {
+  /**
+   * Retry an app-reported -1712 timeout. Defaults to true because the built-in
+   * scripts are reads. A script that writes must pass false: a timed-out write
+   * may have partially applied, and a retry could duplicate it (#121).
+   */
+  retryOnTimeout?: boolean;
+}
+
 export async function executeOmniFocusScript(
   scriptPath: string,
-  args?: string[]
+  args?: string[],
+  options: ExecuteOmniFocusScriptOptions = {}
 ): Promise<any> {
+  const { retryOnTimeout = true } = options;
   const start = Date.now();
   try {
     // Get the actual script path
@@ -435,10 +446,11 @@ ${scriptContent}`;
     // Write the JXA script to the temporary file
     writeFileSync(tempFile, jxaScript);
 
-    // Execute the JXA script using osascript (read path — safe to retry on -1712)
+    // Execute the JXA script using osascript. Built-in scripts are reads and
+    // retry on -1712; callers running user scripts that may write pass false.
     const { stdout, stderr } = await runOsascriptFile(tempFile, {
       language: 'JavaScript',
-      retryOnTimeout: true,
+      retryOnTimeout,
     });
 
     // Clean up the temporary file
