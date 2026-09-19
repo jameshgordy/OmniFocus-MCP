@@ -1,13 +1,14 @@
 import { connect, Socket } from 'net';
 import { spawn } from 'child_process';
 import { mkdirSync, openSync } from 'fs';
+import { StringDecoder } from 'string_decoder';
 import { dirname, join } from 'path';
 import { fileURLToPath } from 'url';
-import type { Readable, Writable } from 'stream';
 import { resolveSocketPath, resolveLockDir, SOCKET_DIR_MODE } from './socketPath.js';
 import { tryAcquireLock } from './lock.js';
 import { resolveIdleTimeoutMinutes, installIdleTimeout } from '../utils/idleTimeout.js';
 import { SessionTracker } from './sessionReplay.js';
+import { ClientProbe } from './clientProbe.js';
 
 /**
  * The client-facing half of the daemon (issue #80).
@@ -15,7 +16,10 @@ import { SessionTracker } from './sessionReplay.js';
  * This is what an MCP client launches. It speaks no protocol of its own: it
  * connects to the shared daemon and splices stdin/stdout onto that socket. MCP
  * over stdio is newline-delimited JSON-RPC with no per-connection framing beyond
- * the newline, so a byte-for-byte pipe is a complete implementation.
+ * the newline, so a byte-for-byte pipe is a complete implementation. The one
+ * exception is the idle probe (#126): the shim writes a `ping` of its own and
+ * swallows the client's answer to it, because the daemon never asked for it. No
+ * other byte is altered — see `clientProbe.ts`.
  *
  * Why a shim at all, rather than pointing clients at the daemon directly? Because
  * every MCP client in existence knows how to launch a command and talk to its
@@ -33,9 +37,6 @@ export const DAEMON_START_TIMEOUT_MS = 10_000;
 const CONNECT_RETRY_INTERVAL_MS = 50;
 /** How many daemon restarts one shim will transparently survive (#123). */
 const MAX_RECONNECTS = 5;
-/** Error text for a request still unanswered when the idle backstop parks the session. */
-const IDLE_ORPHAN_MESSAGE =
-  'This request was still unanswered after a long idle period, so the OmniFocus MCP session was reset. Retry the request.';
 
 export interface RunShimOptions {
   socketPath?: string;
@@ -44,11 +45,6 @@ export interface RunShimOptions {
   /** Injected for tests. Runs the server in-process when the daemon is unusable. */
   fallback?: () => Promise<void>;
   startTimeoutMs?: number;
-  /** Injected for tests. Defaults to process.stdin / process.stdout. */
-  input?: Readable;
-  output?: Writable;
-  /** Injected for tests. Defaults to OMNIFOCUS_MCP_IDLE_TIMEOUT_MINUTES. */
-  idleTimeoutMinutes?: number;
 }
 
 /**
@@ -193,45 +189,56 @@ export async function runShim(options: RunShimOptions = {}): Promise<void> {
     return;
   }
 
-  const input: Readable = options.input ?? process.stdin;
-  const output: Writable = options.output ?? process.stdout;
-  const idleMinutes =
-    options.idleTimeoutMinutes ??
-    resolveIdleTimeoutMinutes(process.env.OMNIFOCUS_MCP_IDLE_TIMEOUT_MINUTES);
+  const idleMinutes = resolveIdleTimeoutMinutes(process.env.OMNIFOCUS_MCP_IDLE_TIMEOUT_MINUTES);
 
-  // Session state that has to survive losing the daemon socket (#123). Observing
-  // only — the pipe below stays byte-for-byte.
+  // Session state that has to survive a daemon restart (#123). Observing only —
+  // the pipe below stays byte-for-byte.
   const session = new SessionTracker();
   let active: Socket = socket;
   let clientClosed = false;
-  /**
-   * True whenever no daemon socket is attached: while rebuilding after a daemon
-   * crash, and while parked idle. Client bytes that arrive in that state queue in
-   * `backlog` and are flushed, in order, once a session is attached again.
-   */
-  let detached = false;
-  let rebuilding = false;
+  let reconnecting = false;
   let reconnectsLeft = MAX_RECONNECTS;
-  const backlog: Buffer[] = [];
+
+  // Liveness probe for the idle backstop below (#126). Constructed here so the
+  // stdin handler can filter the answer out before anything else sees it.
+  const probe = new ClientProbe({
+    // Writing to stdout is safe here even though the daemon relay writes to it
+    // too: the daemon only speaks in response to a client request, and the idle
+    // timer fires only after a full window in which the client said nothing, so
+    // there is no relayed line in flight to interleave with.
+    write: (line: string) => process.stdout.write(line + '\n'),
+    // Quiet on purpose: the bytes that answered the ping already reset the idle
+    // timer, so there is nothing left to do.
+    onAlive: () => {},
+    onDead: () => {
+      console.error(
+        `[omnifocus-mcp] no client traffic for ${idleMinutes}m and no answer to a ping; closing daemon session (issue #80).`
+      );
+      exit();
+    },
+  });
+
+  // Decode statefully. A chunk can end mid-character — a pipe read boundary has
+  // nothing to do with UTF-8 sequence boundaries — and `chunk.toString('utf8')`
+  // turns that tail into U+FFFD, which the next chunk cannot undo. That was
+  // harmless while the decoded copy was only observed and the Buffer itself was
+  // forwarded, but the probe filter forwards the decoded string, so the decoder
+  // has to hold the partial sequence until the rest of it arrives (#126).
+  const stdinDecoder = new StringDecoder('utf8');
 
   // Nothing has touched stdin until now, so it is still paused and no client
   // bytes have been dropped while we were connecting.
-  input.on('data', (chunk: Buffer) => {
-    session.observeOutbound(chunk.toString('utf8'));
-    if (!detached) {
-      active.write(chunk);
-      return;
-    }
-    backlog.push(chunk);
-    // Parked idle: the first request after the quiet spell wakes the session.
-    if (!rebuilding) void rebuild();
+  process.stdin.on('data', (chunk: Buffer) => {
+    const forwarded = probe.filter(stdinDecoder.write(chunk));
+    session.observeOutbound(forwarded);
+    if (forwarded) active.write(forwarded);
   });
 
   const attachSocket = (sock: Socket): void => {
     active = sock;
     sock.on('data', (chunk: Buffer) => {
       session.observeInbound(chunk.toString('utf8'));
-      output.write(chunk);
+      process.stdout.write(chunk);
     });
     sock.on('close', onSocketGone);
     sock.on('error', (err: NodeJS.ErrnoException) => {
@@ -248,95 +255,43 @@ export async function runShim(options: RunShimOptions = {}): Promise<void> {
   };
 
   /**
-   * Attach a fresh daemon connection, replay the handshake so the new session
-   * knows this client, then release anything the client sent meanwhile. Exits
-   * only if no daemon can be reached at all — at that point nothing can work.
+   * The daemon went away. Historically this exited, on the assumption the client
+   * would relaunch — which is false for clients that treat a stdio exit as
+   * terminal (#123). Try to rebuild the session on a new daemon instead, and only
+   * exit if that cannot be done.
    */
-  async function rebuild(): Promise<void> {
-    rebuilding = true;
+  async function onSocketGone(): Promise<void> {
+    if (clientClosed || reconnecting) return;
+    reconnecting = true;
     try {
+      if (!session.canReplay || reconnectsLeft <= 0) {
+        exit();
+        return;
+      }
+      reconnectsLeft--;
       let next: Socket | null = null;
       try {
         next = await obtainConnection(socketPath, spawnDaemon, startTimeoutMs);
       } catch {
         next = null;
       }
-      if (clientClosed) {
-        next?.destroy();
-        exit();
-        return;
-      }
       if (!next) {
         console.error('[omnifocus-mcp] daemon gone and not recoverable; exiting.');
         exit();
         return;
       }
+      console.error('[omnifocus-mcp] daemon restarted; re-establishing session (#123).');
       attachSocket(next);
       // Rebuild server-side session state before anything else reaches it.
       for (const line of session.replayLines()) next.write(line + '\n');
-      detached = false;
-      for (const chunk of backlog) next.write(chunk);
-      backlog.length = 0;
+      // Fail in-flight requests explicitly rather than letting the client hang
+      // on responses that died with the old daemon.
+      for (const line of session.orphanedResponses()) process.stdout.write(line + '\n');
+      session.clearPending();
     } finally {
-      rebuilding = false;
+      reconnecting = false;
     }
   }
-
-  /**
-   * The daemon went away underneath a live session. Historically this exited, on
-   * the assumption the client would relaunch — which is false for clients that
-   * treat a stdio exit as terminal (#123). Rebuild the session on a new daemon
-   * instead, and only exit if that cannot be done.
-   */
-  async function onSocketGone(): Promise<void> {
-    // `detached` covers both a rebuild already in progress and a socket we closed
-    // on purpose when parking idle — neither is a daemon failure.
-    if (clientClosed || detached) return;
-    if (!session.canReplay || reconnectsLeft <= 0) {
-      exit();
-      return;
-    }
-    reconnectsLeft--;
-    detached = true;
-    // Fail in-flight requests explicitly rather than letting the client hang on
-    // responses that died with the old daemon. Snapshot the ids now: anything the
-    // client sends while we rebuild lands in the backlog and *will* be answered.
-    const orphans = session.orphanedResponses();
-    session.clearPending();
-    console.error('[omnifocus-mcp] daemon restarted; re-establishing session (#123).');
-    await rebuild();
-    for (const line of orphans) output.write(line + '\n');
-  }
-
-  /**
-   * Idle backstop. The original form of this exited the shim after 30 quiet
-   * minutes, as the last-resort catch for a client that was SIGKILLed with its
-   * stdin held open by a wrapper. But a quiet client is usually a *live* one —
-   * Claude Desktop sits open all day and calls OmniFocus a few times — and it
-   * treats the exit as the server dying for good: tools gone until the app is
-   * relaunched. So instead of exiting, release the daemon session (that is the
-   * resource worth freeing; it lets the daemon's own idle reaper run) and keep
-   * stdin open. The next request rebuilds the session transparently.
-   *
-   * A client that never even sent `initialize` in that time has nothing to
-   * resume and is far more likely stranded than idle, so that case still exits.
-   */
-  const park = (): void => {
-    if (clientClosed || detached) return;
-    if (!session.canReplay) {
-      console.error(`[omnifocus-mcp] no client traffic for ${idleMinutes}m and no session; exiting.`);
-      exit();
-      return;
-    }
-    console.error(
-      `[omnifocus-mcp] no client traffic for ${idleMinutes}m; releasing daemon session until the next request (issue #80).`
-    );
-    detached = true;
-    const orphans = session.orphanedResponses(IDLE_ORPHAN_MESSAGE);
-    session.clearPending();
-    active.destroy();
-    for (const line of orphans) output.write(line + '\n');
-  };
 
   // A client that closes its end of the pipes is a disconnect, not a fault. With
   // no handler, node's default for an 'error' event is to rethrow, so a client
@@ -349,23 +304,31 @@ export async function runShim(options: RunShimOptions = {}): Promise<void> {
     }
     exit();
   };
-  output.on('error', onPipeError);
-  input.on('error', onPipeError);
+  process.stdout.on('error', onPipeError);
+  process.stdin.on('error', onPipeError);
 
   attachSocket(socket);
 
-  input.on('end', () => {
+  process.stdin.on('end', () => {
     clientClosed = true;
-    if (detached) {
-      // Parked or mid-rebuild: nothing to hand the daemon, so just go.
-      if (!rebuilding) exit();
-      return;
-    }
     active.end();
   });
   process.on('SIGTERM', exit);
   process.on('SIGHUP', exit);
   process.on('SIGINT', exit);
 
-  installIdleTimeout(input, idleMinutes, park);
+  // Same orphan backstop as the standalone server: if the client is SIGKILLed
+  // and the wrapper chain holds stdin open, no EOF ever arrives. A stranded shim
+  // is far cheaper than a stranded server, but it still pins a daemon session.
+  //
+  // Silence is not proof of death, though, and exiting on it cost live sessions
+  // their tools: a client that treats a stdio exit as terminal (#123) never
+  // comes back, and a long-lived agent session going 30 minutes without an
+  // OmniFocus call is ordinary (#126). So the timer now pings the client instead
+  // of exiting, and only a ping that goes unanswered ends the session. A
+  // stranded shim still dies, one idle window plus one probe window later.
+  installIdleTimeout(process.stdin, idleMinutes, () => {
+    if (clientClosed) return; // the close/EOF paths above already handle it
+    probe.start();
+  });
 }
